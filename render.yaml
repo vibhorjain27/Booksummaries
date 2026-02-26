@@ -1,0 +1,70 @@
+services:
+  - type: web
+    name: booksummaries-api
+    runtime: node
+    plan: starter
+    rootDir: .
+    autoDeploy: true
+    buildCommand: npm install && npm --workspace @distill/contracts run build && npm --workspace @distill/api run build
+    startCommand: npm --workspace @distill/api run db:push && npm --workspace @distill/api run db:seed && npm --workspace @distill/api run start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PORT
+        value: 4000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: booksummaries-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: booksummaries-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CONTENT_POLICY_MODE
+        value: unrestricted
+      - key: DEFAULT_TIMEZONE
+        value: America/Los_Angeles
+      - key: RUN_INGEST_WORKER
+        value: false
+
+  - type: worker
+    name: booksummaries-worker
+    runtime: node
+    plan: starter
+    rootDir: .
+    autoDeploy: true
+    buildCommand: npm install && npm --workspace @distill/contracts run build && npm --workspace @distill/api run build
+    startCommand: npm --workspace @distill/api run start:worker
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: DATABASE_URL
+        fromDatabase:
+          name: booksummaries-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: booksummaries-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CONTENT_POLICY_MODE
+        value: unrestricted
+      - key: DEFAULT_TIMEZONE
+        value: America/Los_Angeles
+      - key: RUN_INGEST_WORKER
+        value: true
+
+  - type: redis
+    name: booksummaries-redis
+    plan: starter
+    maxmemoryPolicy: noeviction
+
+databases:
+  - name: booksummaries-postgres
+    plan: starter

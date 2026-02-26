@@ -5,14 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/main.ts",
+    "dev:worker": "tsx watch src/worker.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
+    "start:worker": "node dist/worker.js",
     "lint": "echo 'no lint configured'",
     "test": "tsx --test src/**/*.test.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
-    "db:seed": "tsx src/db/seed.ts"
+    "db:seed": "tsx src/db/seed.ts",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@distill/contracts": "0.1.0",

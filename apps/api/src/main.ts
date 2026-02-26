@@ -32,13 +32,16 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ message: 'Internal server error', error: err.message });
 });
 
-startIngestWorker();
+const worker = env.RUN_INGEST_WORKER === 'true' ? startIngestWorker() : null;
 
-const server = app.listen(Number(env.PORT), () => {
-  console.log(`API listening on http://localhost:${env.PORT}`);
+const server = app.listen(Number(env.PORT), '0.0.0.0', () => {
+  console.log(`API listening on http://0.0.0.0:${env.PORT}`);
 });
 
 const shutdown = async () => {
+  if (worker) {
+    await worker.close();
+  }
   server.close();
   await prisma.$disconnect();
 };
