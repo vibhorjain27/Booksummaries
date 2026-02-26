@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { IngestBookRequest } from '@distill/contracts';
 import { authRequired } from '../auth/middleware.js';
 import { enqueueIngest, validateContentPolicy } from '../../services/pipeline.service.js';
-import { store } from '../../db/store.js';
+import { prisma } from '../../db/prisma.js';
 
 const ingestSchema = z.object({
   source_url: z.string().url(),
@@ -35,19 +35,35 @@ booksRoutes.post('/ingest', authRequired, async (req, res) => {
   res.status(202).json({ ingest_job_id, status: 'queued' });
 });
 
-booksRoutes.get('/:id/distillation', authRequired, (req, res) => {
+booksRoutes.get('/:id/distillation', authRequired, async (req, res) => {
   const bookId = req.params.id;
-  const distillation = store.distillations.find((item) => item.bookId === bookId && item.status === 'published');
+  const distillation = await prisma.distillation.findFirst({
+    where: { bookId, status: 'published' },
+    orderBy: { version: 'desc' }
+  });
+
   if (!distillation) {
     res.status(404).json({ message: 'Distillation not found' });
     return;
   }
 
-  const chapter_summaries = store.chapters.filter((item) => item.distillationId === distillation.id);
+  const chapterSummaries = await prisma.distilledChapter.findMany({
+    where: { distillationId: distillation.id },
+    orderBy: { chapterNumber: 'asc' }
+  });
 
   res.json({
     book_summary: distillation.bookSummary,
-    chapter_summaries,
+    chapter_summaries: chapterSummaries.map((chapter) => ({
+      id: chapter.id,
+      distillationId: chapter.distillationId,
+      chapterNumber: chapter.chapterNumber,
+      title: chapter.title,
+      summary: chapter.summary,
+      contextWhyItMatters: chapter.contextWhyItMatters,
+      estimatedMinutes: chapter.estimatedMinutes,
+      sourceSpanRefs: chapter.sourceSpanRefs
+    })),
     context_threads: distillation.contextThreads,
     total_estimated_minutes: distillation.totalEstimatedMinutes
   });

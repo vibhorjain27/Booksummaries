@@ -1,9 +1,10 @@
 import { Queue } from 'bullmq';
 import { env } from '../config/env.js';
-import { ids, store } from '../db/store.js';
+import { prisma } from '../db/prisma.js';
 
 export interface IngestJobPayload {
   sourceUrl: string;
+  sourceId?: string;
   titleHint?: string;
   authorHint?: string;
 }
@@ -20,21 +21,21 @@ const getQueue = (): Queue<IngestJobPayload> => {
 };
 
 export const enqueueIngest = async (payload: IngestJobPayload): Promise<string> => {
-  const ingestId = ids.ingest();
-  store.bookSources.push({
-    id: ids.source(),
-    sourceUrl: payload.sourceUrl,
-    titleHint: payload.titleHint,
-    authorHint: payload.authorHint,
-    fetchStatus: 'queued'
+  const source = await prisma.bookSource.create({
+    data: {
+      sourceUrl: payload.sourceUrl,
+      titleHint: payload.titleHint,
+      authorHint: payload.authorHint,
+      fetchStatus: 'queued'
+    }
   });
 
   try {
     await getQueue().add(
       'process-pdf',
-      payload,
+      { ...payload, sourceId: source.id },
       {
-        jobId: ingestId,
+        jobId: source.id,
         removeOnComplete: true,
         removeOnFail: 100,
         attempts: 3,
@@ -42,10 +43,10 @@ export const enqueueIngest = async (payload: IngestJobPayload): Promise<string> 
       }
     );
   } catch {
-    // Keep ingest queued; worker can be unavailable in local dev.
+    // Local dev can run without redis.
   }
 
-  return ingestId;
+  return source.id;
 };
 
 export const validateContentPolicy = (url: string): { allowed: boolean; reason?: string } => {

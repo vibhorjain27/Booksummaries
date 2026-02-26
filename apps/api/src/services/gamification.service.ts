@@ -1,116 +1,159 @@
 import type { BadgeAward } from '@distill/contracts';
-import { ids, store } from '../db/store.js';
-import { isNewDay, nowIso } from '../utils/time.js';
+import { prisma } from '../db/prisma.js';
+import { isNewDay } from '../utils/time.js';
 
-const BADGES: Array<{ code: BadgeAward['badgeCode']; rule: (userId: string) => boolean }> = [
+const BADGES: Array<{ code: BadgeAward['badgeCode']; rule: (userId: string) => Promise<boolean> }> = [
   {
     code: 'first_book',
-    rule: (userId) => store.progress.some((p) => p.userId === userId && p.completed)
+    rule: async (userId) => Boolean(await prisma.readingProgress.findFirst({ where: { userId, completed: true } }))
   },
   {
     code: 'seven_day_streak',
-    rule: (userId) => (store.users.find((u) => u.id === userId)?.streakCount ?? 0) >= 7
+    rule: async (userId) => (await prisma.user.findUnique({ where: { id: userId } }))?.streakCount >= 7
   },
   {
     code: 'thirty_chapters',
-    rule: (userId) => {
-      const chapterCount = store.progress
-        .filter((p) => p.userId === userId)
-        .reduce((sum, p) => sum + p.completedChapterIds.length, 0);
-      return chapterCount >= 30;
+    rule: async (userId) => {
+      const progress = await prisma.readingProgress.findMany({ where: { userId }, select: { completedChapterIds: true } });
+      const count = progress.reduce((sum, item) => sum + item.completedChapterIds.length, 0);
+      return count >= 30;
     }
   }
 ];
 
-export const applyChapterCompletion = (userId: string, bookId: string, chapterId: string, readingSeconds: number) => {
-  const user = store.users.find((item) => item.id === userId);
-  const progress = store.progress.find((item) => item.userId === userId && item.bookId === bookId);
-  const distillation = store.distillations.find((item) => item.bookId === bookId && item.status === 'published');
+export const applyChapterCompletion = async (
+  userId: string,
+  bookId: string,
+  chapterId: string,
+  readingSeconds: number
+) => {
+  const [user, progress, distillation] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId } }),
+    prisma.readingProgress.findUnique({ where: { userId_bookId: { userId, bookId } } }),
+    prisma.distillation.findFirst({ where: { bookId, status: 'published' } })
+  ]);
 
   if (!user || !progress || !distillation) {
     throw new Error('Missing user/progress/distillation');
   }
 
   const chapterAlreadyCompleted = progress.completedChapterIds.includes(chapterId);
+  const completedChapterIds = chapterAlreadyCompleted ? progress.completedChapterIds : [...progress.completedChapterIds, chapterId];
 
-  if (!chapterAlreadyCompleted) {
-    progress.completedChapterIds.push(chapterId);
-    user.xp += 20;
-  }
+  const totalChapters = await prisma.distilledChapter.count({ where: { distillationId: distillation.id } });
+  const completedBook = !progress.completed && completedChapterIds.length >= totalChapters;
 
-  progress.readingSeconds += Math.max(readingSeconds, 0);
-  progress.currentChapter = progress.completedChapterIds.length + 1;
-  progress.updatedAt = nowIso();
-
-  const totalChapters = store.chapters.filter((c) => c.distillationId === distillation.id).length;
-  if (progress.completedChapterIds.length >= totalChapters) {
-    if (!progress.completed) {
-      progress.completed = true;
-      user.xp += 100;
-      const assignment = store.assignments.find((a) => a.userId === userId && a.bookId === bookId && !a.locked);
-      if (assignment) assignment.locked = true;
-    }
-  }
+  let nextXp = user.xp + (chapterAlreadyCompleted ? 0 : 20) + (completedBook ? 100 : 0);
+  let nextStreak = user.streakCount;
+  let nextLastStreakAt = user.lastStreakAt;
 
   const qualifiesForStreak = readingSeconds >= 900 || !chapterAlreadyCompleted;
   if (qualifiesForStreak) {
-    if (!user.lastStreakAt || isNewDay(user.lastStreakAt, user.timezone)) {
-      user.streakCount += 1;
-      user.lastStreakAt = nowIso();
+    const shouldIncrement = !user.lastStreakAt || isNewDay(user.lastStreakAt.toISOString(), user.timezone);
+    if (shouldIncrement) {
+      nextStreak += 1;
+      nextLastStreakAt = new Date();
     }
   }
 
-  store.gamificationEvents.push({
-    id: ids.event(),
-    userId,
-    type: 'chapter_completed',
-    deltaXp: 20,
-    createdAt: nowIso()
+  await prisma.$transaction(async (tx) => {
+    await tx.readingProgress.update({
+      where: { userId_bookId: { userId, bookId } },
+      data: {
+        completedChapterIds,
+        readingSeconds: progress.readingSeconds + Math.max(readingSeconds, 0),
+        currentChapter: completedChapterIds.length + 1,
+        completed: progress.completed || completedBook
+      }
+    });
+
+    await tx.user.update({
+      where: { id: userId },
+      data: {
+        xp: nextXp,
+        streakCount: nextStreak,
+        lastStreakAt: nextLastStreakAt ?? undefined
+      }
+    });
+
+    if (completedBook) {
+      const assignment = await tx.dailyAssignment.findFirst({ where: { userId, bookId, locked: false } });
+      if (assignment) {
+        await tx.dailyAssignment.update({ where: { id: assignment.id }, data: { locked: true } });
+      }
+    }
+
+    await tx.gamificationEvent.create({
+      data: {
+        userId,
+        type: 'chapter_completed',
+        deltaXp: chapterAlreadyCompleted ? 0 : 20
+      }
+    });
   });
 
-  const unlocked = unlockBadges(userId);
+  const unlocked = await unlockBadges(userId);
 
   return {
-    xp: user.xp,
-    streak_count: user.streakCount,
-    completion_percent: Math.min(100, Math.round((progress.completedChapterIds.length / totalChapters) * 100)),
+    xp: nextXp,
+    streak_count: nextStreak,
+    completion_percent: Math.min(100, Math.round((completedChapterIds.length / Math.max(totalChapters, 1)) * 100)),
     unlocked_badges: unlocked
   };
 };
 
-export const unlockBadges = (userId: string): BadgeAward[] => {
-  const now = nowIso();
+export const unlockBadges = async (userId: string): Promise<BadgeAward[]> => {
   const unlocked: BadgeAward[] = [];
 
   for (const badge of BADGES) {
-    const already = store.badges.find((b) => b.userId === userId && b.badgeCode === badge.code);
-    if (already || !badge.rule(userId)) continue;
+    const already = await prisma.badgeAward.findUnique({ where: { userId_badgeCode: { userId, badgeCode: badge.code } } });
+    if (already) continue;
 
-    const award: BadgeAward = {
-      id: ids.badge(),
-      userId,
-      badgeCode: badge.code,
-      claimed: false,
-      earnedAt: now
-    };
+    const shouldUnlock = await badge.rule(userId);
+    if (!shouldUnlock) continue;
 
-    store.badges.push(award);
-    unlocked.push(award);
+    const award = await prisma.badgeAward.create({
+      data: {
+        userId,
+        badgeCode: badge.code,
+        claimed: false
+      }
+    });
+
+    unlocked.push({
+      id: award.id,
+      userId: award.userId,
+      badgeCode: award.badgeCode,
+      claimed: award.claimed,
+      earnedAt: award.earnedAt.toISOString()
+    });
   }
 
   return unlocked;
 };
 
-export const claimBadge = (userId: string, badgeCode: BadgeAward['badgeCode']): BadgeAward | null => {
-  const badge = store.badges.find((item) => item.userId === userId && item.badgeCode === badgeCode);
+export const claimBadge = async (userId: string, badgeCode: BadgeAward['badgeCode']): Promise<BadgeAward | null> => {
+  const badge = await prisma.badgeAward.findUnique({ where: { userId_badgeCode: { userId, badgeCode } } });
   if (!badge) return null;
-  badge.claimed = true;
-  store.gamificationEvents.push({
-    id: ids.event(),
-    userId,
-    type: 'badge_claimed',
-    deltaXp: 0,
-    createdAt: nowIso()
+
+  const updated = await prisma.badgeAward.update({
+    where: { id: badge.id },
+    data: { claimed: true }
   });
-  return badge;
+
+  await prisma.gamificationEvent.create({
+    data: {
+      userId,
+      type: 'badge_claimed',
+      deltaXp: 0
+    }
+  });
+
+  return {
+    id: updated.id,
+    userId: updated.userId,
+    badgeCode: updated.badgeCode,
+    claimed: updated.claimed,
+    earnedAt: updated.earnedAt.toISOString()
+  };
 };

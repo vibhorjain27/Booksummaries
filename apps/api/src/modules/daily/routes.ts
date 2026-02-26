@@ -13,12 +13,12 @@ const completeSchema = z.object({
 
 export const dailyRoutes = Router();
 
-dailyRoutes.get('/active', authRequired, (req, res) => {
+dailyRoutes.get('/active', authRequired, async (req, res) => {
   const userId = req.userId as string;
-  res.json(getActiveDaily(userId));
+  res.json(await getActiveDaily(userId));
 });
 
-dailyRoutes.post('/complete-chapter', authRequired, (req, res) => {
+dailyRoutes.post('/complete-chapter', authRequired, async (req, res) => {
   const parsed = completeSchema.safeParse(req.body as CompleteChapterRequest);
   if (!parsed.success) {
     res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
@@ -27,7 +27,7 @@ dailyRoutes.post('/complete-chapter', authRequired, (req, res) => {
 
   try {
     const userId = req.userId as string;
-    const result = applyChapterCompletion(
+    const result = await applyChapterCompletion(
       userId,
       parsed.data.book_id,
       parsed.data.chapter_id,

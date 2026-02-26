@@ -1,103 +1,149 @@
-import { store, ids } from '../db/store.js';
-import { nowIso } from '../utils/time.js';
+import { prisma } from '../db/prisma.js';
 
-const ensureQueuedNextBook = (userId: string, currentBookId: string): void => {
-  const queuedExists = store.assignments.some((a) => a.userId === userId && a.locked);
+const ensureQueuedNextBook = async (userId: string, currentBookId: string): Promise<void> => {
+  const queuedExists = await prisma.dailyAssignment.findFirst({ where: { userId, locked: true } });
   if (queuedExists) return;
 
-  const nextBook = store.books.find(
-    (book) =>
-      book.id !== currentBookId &&
-      !store.progress.some((p) => p.userId === userId && p.bookId === book.id)
-  );
+  const progressed = await prisma.readingProgress.findMany({ where: { userId }, select: { bookId: true } });
+  const progressedIds = progressed.map((item) => item.bookId);
+
+  const nextBook = await prisma.book.findFirst({
+    where: {
+      id: { not: currentBookId, notIn: progressedIds }
+    },
+    orderBy: { createdAt: 'asc' }
+  });
 
   if (!nextBook) return;
 
-  store.assignments.push({
-    id: ids.assignment(),
-    userId,
-    bookId: nextBook.id,
-    assignedAt: nowIso(),
-    locked: true
+  await prisma.dailyAssignment.create({
+    data: {
+      userId,
+      bookId: nextBook.id,
+      assignedAt: new Date(),
+      locked: true
+    }
   });
 };
 
-export const ensureActiveAssignment = (userId: string): void => {
-  const existing = store.assignments.find((a) => a.userId === userId && !a.locked);
+export const ensureActiveAssignment = async (userId: string): Promise<void> => {
+  const existing = await prisma.dailyAssignment.findFirst({ where: { userId, locked: false } });
   if (existing) {
-    ensureQueuedNextBook(userId, existing.bookId);
+    await ensureQueuedNextBook(userId, existing.bookId);
     return;
   }
 
-  const progress = store.progress.find((p) => p.userId === userId && !p.completed);
-  if (progress) {
-    store.assignments.push({
-      id: ids.assignment(),
-      userId,
-      bookId: progress.bookId,
-      assignedAt: nowIso(),
-      locked: false
+  const openProgress = await prisma.readingProgress.findFirst({ where: { userId, completed: false } });
+  if (openProgress) {
+    await prisma.dailyAssignment.create({
+      data: {
+        userId,
+        bookId: openProgress.bookId,
+        assignedAt: new Date(),
+        locked: false
+      }
     });
-    ensureQueuedNextBook(userId, progress.bookId);
+
+    await ensureQueuedNextBook(userId, openProgress.bookId);
     return;
   }
 
-  const lockedNext = store.assignments.find((a) => a.userId === userId && a.locked);
+  const lockedNext = await prisma.dailyAssignment.findFirst({ where: { userId, locked: true }, orderBy: { assignedAt: 'asc' } });
   if (lockedNext) {
-    lockedNext.locked = false;
+    await prisma.dailyAssignment.update({ where: { id: lockedNext.id }, data: { locked: false } });
 
-    if (!store.progress.some((p) => p.userId === userId && p.bookId === lockedNext.bookId)) {
-      store.progress.push({
-        id: ids.progress(),
+    await prisma.readingProgress.upsert({
+      where: { userId_bookId: { userId, bookId: lockedNext.bookId } },
+      update: {},
+      create: {
         userId,
         bookId: lockedNext.bookId,
         currentChapter: 1,
         completedChapterIds: [],
         readingSeconds: 0,
-        completed: false,
-        updatedAt: nowIso()
-      });
-    }
+        completed: false
+      }
+    });
 
-    ensureQueuedNextBook(userId, lockedNext.bookId);
+    await ensureQueuedNextBook(userId, lockedNext.bookId);
     return;
   }
 
-  const nextBook = store.books.find((book) => !store.progress.some((p) => p.userId === userId && p.bookId === book.id));
+  const progressed = await prisma.readingProgress.findMany({ where: { userId }, select: { bookId: true } });
+  const progressedIds = progressed.map((item) => item.bookId);
+
+  const nextBook = await prisma.book.findFirst({
+    where: { id: { notIn: progressedIds } },
+    orderBy: { createdAt: 'asc' }
+  });
+
   if (!nextBook) return;
 
-  store.assignments.push({
-    id: ids.assignment(),
-    userId,
-    bookId: nextBook.id,
-    assignedAt: nowIso(),
-    locked: false
-  });
+  await prisma.$transaction([
+    prisma.dailyAssignment.create({
+      data: {
+        userId,
+        bookId: nextBook.id,
+        assignedAt: new Date(),
+        locked: false
+      }
+    }),
+    prisma.readingProgress.create({
+      data: {
+        userId,
+        bookId: nextBook.id,
+        currentChapter: 1,
+        completedChapterIds: [],
+        readingSeconds: 0,
+        completed: false
+      }
+    })
+  ]);
 
-  store.progress.push({
-    id: ids.progress(),
-    userId,
-    bookId: nextBook.id,
-    currentChapter: 1,
-    completedChapterIds: [],
-    readingSeconds: 0,
-    completed: false,
-    updatedAt: nowIso()
-  });
-
-  ensureQueuedNextBook(userId, nextBook.id);
+  await ensureQueuedNextBook(userId, nextBook.id);
 };
 
-export const getActiveDaily = (userId: string) => {
-  ensureActiveAssignment(userId);
-  const active = store.assignments.find((a) => a.userId === userId && !a.locked) ?? null;
+export const getActiveDaily = async (userId: string) => {
+  await ensureActiveAssignment(userId);
+
+  const active = await prisma.dailyAssignment.findFirst({ where: { userId, locked: false } });
   if (!active) {
     return { active_assignment: null, book: null, progress: null };
   }
 
+  const [book, progress] = await Promise.all([
+    prisma.book.findUnique({ where: { id: active.bookId } }),
+    prisma.readingProgress.findUnique({ where: { userId_bookId: { userId, bookId: active.bookId } } })
+  ]);
+
   return {
-    active_assignment: active,
-    book: store.books.find((b) => b.id === active.bookId) ?? null,
-    progress: store.progress.find((p) => p.userId === userId && p.bookId === active.bookId) ?? null
+    active_assignment: {
+      id: active.id,
+      userId: active.userId,
+      bookId: active.bookId,
+      assignedAt: active.assignedAt.toISOString(),
+      locked: active.locked
+    },
+    book: book
+      ? {
+          id: book.id,
+          title: book.title,
+          author: book.author,
+          coverUrl: book.coverUrl ?? undefined,
+          totalEstimatedMinutes: book.totalEstimatedMinutes
+        }
+      : null,
+    progress: progress
+      ? {
+          id: progress.id,
+          userId: progress.userId,
+          bookId: progress.bookId,
+          currentChapter: progress.currentChapter,
+          completedChapterIds: progress.completedChapterIds,
+          readingSeconds: progress.readingSeconds,
+          completed: progress.completed,
+          updatedAt: progress.updatedAt.toISOString()
+        }
+      : null
   };
 };

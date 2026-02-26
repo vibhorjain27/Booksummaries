@@ -9,6 +9,7 @@ import { libraryRoutes } from './modules/library/routes.js';
 import { gamificationRoutes } from './modules/gamification/routes.js';
 import { adminRoutes } from './modules/admin/routes.js';
 import { startIngestWorker } from './workers/ingest.worker.js';
+import { prisma } from './db/prisma.js';
 
 const app = express();
 
@@ -33,6 +34,14 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 
 startIngestWorker();
 
-app.listen(Number(env.PORT), () => {
+const server = app.listen(Number(env.PORT), () => {
   console.log(`API listening on http://localhost:${env.PORT}`);
 });
+
+const shutdown = async () => {
+  server.close();
+  await prisma.$disconnect();
+};
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

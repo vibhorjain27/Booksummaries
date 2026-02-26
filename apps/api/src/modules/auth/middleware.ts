@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { verifyJwt } from '../../utils/jwt.js';
-import { store } from '../../db/store.js';
+import { prisma } from '../../db/prisma.js';
 
 declare global {
   namespace Express {
@@ -10,7 +10,7 @@ declare global {
   }
 }
 
-export const authRequired = (req: Request, res: Response, next: NextFunction): void => {
+export const authRequired = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) {
     res.status(401).json({ message: 'Missing bearer token' });
@@ -19,7 +19,7 @@ export const authRequired = (req: Request, res: Response, next: NextFunction): v
 
   try {
     const payload = verifyJwt(auth.slice(7));
-    const user = store.users.find((item) => item.id === payload.sub);
+    const user = await prisma.user.findUnique({ where: { id: payload.sub } });
     if (!user) {
       res.status(401).json({ message: 'Invalid user' });
       return;

@@ -1,4 +1,4 @@
-const API_BASE = 'http://localhost:4000/v1';
+const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:4000/v1';
 
 let token = '';
 let loginPromise: Promise<void> | null = null;

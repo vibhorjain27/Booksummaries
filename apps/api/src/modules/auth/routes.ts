@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { signJwt } from '../../utils/jwt.js';
-import { store } from '../../db/store.js';
+import { prisma } from '../../db/prisma.js';
+import { env } from '../../config/env.js';
 
 const loginSchema = z.object({
   email: z.string().email()
@@ -9,18 +10,23 @@ const loginSchema = z.object({
 
 export const authRoutes = Router();
 
-authRoutes.post('/login', (req, res) => {
+authRoutes.post('/login', async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
     return;
   }
 
-  const user = store.users.find((item) => item.email === parsed.data.email);
-  if (!user) {
-    res.status(404).json({ message: 'User not found in MVP seed dataset' });
-    return;
-  }
+  const user = await prisma.user.upsert({
+    where: { email: parsed.data.email },
+    update: {},
+    create: {
+      email: parsed.data.email,
+      timezone: env.DEFAULT_TIMEZONE,
+      booksPerYearGoal: 120,
+      paceMinutesPerDay: 60
+    }
+  });
 
   const token = signJwt({ sub: user.id, email: user.email });
   res.json({ token, user });
