@@ -1,0 +1,16 @@
+{
+  "name": "one-hour-distillation",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run -ws build",
+    "dev:api": "npm --workspace @distill/api run dev",
+    "dev:mobile": "npm --workspace @distill/mobile run dev",
+    "lint": "npm run -ws lint",
+    "test": "npm run -ws test"
+  }
+}
