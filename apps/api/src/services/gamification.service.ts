@@ -9,7 +9,7 @@ const BADGES: Array<{ code: BadgeAward['badgeCode']; rule: (userId: string) => P
   },
   {
     code: 'seven_day_streak',
-    rule: async (userId) => (await prisma.user.findUnique({ where: { id: userId } }))?.streakCount >= 7
+    rule: async (userId) => ((await prisma.user.findUnique({ where: { id: userId } }))?.streakCount ?? 0) >= 7
   },
   {
     code: 'thirty_chapters',

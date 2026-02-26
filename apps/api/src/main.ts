@@ -1,6 +1,6 @@
 import express from 'express';
 import helmet from 'helmet';
-import pinoHttp from 'pino-http';
+import { createRequire } from 'node:module';
 import { env } from './config/env.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { booksRoutes } from './modules/books/routes.js';
@@ -12,6 +12,8 @@ import { startIngestWorker } from './workers/ingest.worker.js';
 import { prisma } from './db/prisma.js';
 
 const app = express();
+const require = createRequire(import.meta.url);
+const pinoHttp = require('pino-http');
 
 app.use(helmet());
 app.use(express.json({ limit: '1mb' }));
