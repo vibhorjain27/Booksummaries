@@ -63,6 +63,9 @@ services:
   - type: redis
     name: booksummaries-redis
     plan: starter
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: allow all public IPs
     maxmemoryPolicy: noeviction
 
 databases:
